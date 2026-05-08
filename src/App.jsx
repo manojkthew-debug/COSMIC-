@@ -1,5 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/firebase-app.js';
+import Feed from './components/Feed';
+import Chat from './components/Chat';
+import Profile from './components/Profile';
 import {
   getAuth,
   createUserWithEmailAndPassword,
@@ -39,6 +42,52 @@ const auth = getAuth(firebaseApp);
 const db = getFirestore(firebaseApp);
 
 // ── E2EE ─────────────────────────────────────────────────────────────────────
+const DB_NAME = 'CosmicKeys';
+const STORE_NAME = 'keys';
+
+async function getDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, 1);
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function savePrivateKey(uid, key) {
+  const db = await getDB();
+  const tx = db.transaction(STORE_NAME, 'readwrite');
+  tx.objectStore(STORE_NAME).put(key, uid);
+  return new Promise((resolve) => (tx.oncomplete = resolve));
+}
+
+async function getPrivateKey(uid) {
+  const db = await getDB();
+  const tx = db.transaction(STORE_NAME, 'readonly');
+  const request = tx.objectStore(STORE_NAME).get(uid);
+  return new Promise((resolve) => (request.onsuccess = () => resolve(request.result)));
+}
+
+async function exportPublicKey(key) {
+  const exported = await window.crypto.subtle.exportKey('spki', key);
+  return btoa(String.fromCharCode(...new Uint8Array(exported)));
+}
+
+async function importPublicKey(spkiB64) {
+  const binaryDerString = atob(spkiB64);
+  const binaryDer = new Uint8Array(binaryDerString.length);
+  for (let i = 0; i < binaryDerString.length; i++) {
+    binaryDer[i] = binaryDerString.charCodeAt(i);
+  }
+  return await window.crypto.subtle.importKey(
+    'spki',
+    binaryDer,
+    { name: 'RSA-OAEP', hash: 'SHA-256' },
+    true,
+    ['encrypt']
+  );
+}
+
 async function generateKeyPair() {
   return await window.crypto.subtle.generateKey(
     {
@@ -51,6 +100,7 @@ async function generateKeyPair() {
     ['encrypt', 'decrypt']
   );
 }
+
 async function encryptMsg(pubKey, text) {
   const buf = await window.crypto.subtle.encrypt(
     { name: 'RSA-OAEP' },
@@ -60,8 +110,62 @@ async function encryptMsg(pubKey, text) {
   return btoa(String.fromCharCode(...new Uint8Array(buf)));
 }
 
+async function decryptMsg(privKey, b64) {
+  try {
+    const binaryString = atob(b64);
+    const buf = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) buf[i] = binaryString.charCodeAt(i);
+    const decrypted = await window.crypto.subtle.decrypt(
+      { name: 'RSA-OAEP' },
+      privKey,
+      buf
+    );
+    return new TextDecoder().decode(decrypted);
+  } catch (e) {
+    return '[Decryption Error: Key mismatch or corrupted message]';
+  }
+}
+
 function roomKey(a, b) {
   return [a, b].sort().join('_');
+}
+
+// ── Components ───────────────────────────────────────────────────────────────
+function Starfield() {
+  const [stars, setStars] = useState([]);
+  useEffect(() => {
+    const s = [];
+    for (let i = 0; i < 150; i++) {
+      s.push({
+        id: i,
+        top: Math.random() * 100 + '%',
+        left: Math.random() * 100 + '%',
+        size: Math.random() * 2 + 1 + 'px',
+        delay: Math.random() * 5 + 's',
+        duration: Math.random() * 3 + 2 + 's',
+      });
+    }
+    setStars(s);
+  }, []);
+
+  return (
+    <div className="starfield">
+      {stars.map((star) => (
+        <div
+          key={star.id}
+          className="star"
+          style={{
+            top: star.top,
+            left: star.left,
+            width: star.size,
+            height: star.size,
+            animationDelay: star.delay,
+            animationDuration: star.duration,
+          }}
+        />
+      ))}
+    </div>
+  );
 }
 
 // ════════════════════════════════════════════════════════════════════════════
@@ -94,19 +198,43 @@ export default function CosmicApp() {
   const [storyView, setStoryView] = useState(null);
   const [sideOpen, setSideOpen] = useState(false);
   const [appLoading, setAppLoading] = useState(true);
+  const [theme, setTheme] = useState(localStorage.getItem('cosmic-theme') || 'cosmic');
+  const [accent, setAccent] = useState(localStorage.getItem('cosmic-accent') || '#7c3aed');
   const bottomRef = useRef(null);
   const unsubMsgs = useRef(null);
   const unsubPosts = useRef(null);
 
   // ── Auth state listener ───────────────────────────────────────────────────
   useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('cosmic-theme', theme);
+  }, [theme]);
+
+  useEffect(() => {
+    document.documentElement.style.setProperty('--accent-color', accent);
+    localStorage.setItem('cosmic-accent', accent);
+  }, [accent]);
+
+  useEffect(() => {
     const unsub = onAuthStateChanged(auth, async (user) => {
       if (user) {
         setCurrentUser(user);
         const profileDoc = await getDoc(doc(db, 'users', user.uid));
-        if (profileDoc.exists()) setUserProfile(profileDoc.data());
+        if (profileDoc.exists()) {
+          const profile = profileDoc.data();
+          setUserProfile(profile);
+          // Handle E2EE Keys
+          let priv = await getPrivateKey(user.uid);
+          if (!priv) {
+            const kp = await generateKeyPair();
+            await savePrivateKey(user.uid, kp.privateKey);
+            priv = kp.privateKey;
+            const pubB64 = await exportPublicKey(kp.publicKey);
+            await setDoc(doc(db, 'users', user.uid), { publicKey: pubB64 }, { merge: true });
+          }
+          setKeys(priv);
+        }
         setPage('app');
-        generateKeyPair().then(setKeys);
         loadPosts();
       } else {
         setCurrentUser(null);
@@ -139,8 +267,20 @@ export default function CosmicApp() {
       collection(db, 'chats', room, 'messages'),
       orderBy('createdAt', 'asc')
     );
-    unsubMsgs.current = onSnapshot(q, (snap) => {
-      setMessages(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    unsubMsgs.current = onSnapshot(q, async (snap) => {
+      const msgs = await Promise.all(
+        snap.docs.map(async (d) => {
+          const data = d.data();
+          let text = '[Encrypted Message]';
+          if (data.from === currentUser.uid) {
+            text = '[You sent an encrypted message]';
+          } else if (keys) {
+            text = await decryptMsg(keys, data.encrypted);
+          }
+          return { id: d.id, ...data, text };
+        })
+      );
+      setMessages(msgs);
     });
   };
 
@@ -178,6 +318,10 @@ export default function CosmicApp() {
       const cred = await createUserWithEmailAndPassword(auth, email, password);
       await updateProfile(cred.user, { displayName });
 
+      const kp = await generateKeyPair();
+      const pubB64 = await exportPublicKey(kp.publicKey);
+      await savePrivateKey(cred.user.uid, kp.privateKey);
+
       const profile = {
         uid: cred.user.uid,
         email,
@@ -185,6 +329,7 @@ export default function CosmicApp() {
         displayName,
         bio: "Hey, I'm on COSMIC 🌌",
         avatar: displayName[0].toUpperCase(),
+        publicKey: pubB64,
         createdAt: serverTimestamp(),
       };
       await setDoc(doc(db, 'users', cred.user.uid), profile);
@@ -273,16 +418,21 @@ export default function CosmicApp() {
     if (!msgInput.trim() || !keys || !activeChat) return;
     const text = msgInput.trim();
     setMsgInput('');
-    const encrypted = await encryptMsg(keys.publicKey, text);
-    const room = roomKey(currentUser.uid, activeChat.uid);
-    await addDoc(collection(db, 'chats', room, 'messages'), {
-      text,
-      encrypted,
-      from: currentUser.uid,
-      fromName: userProfile?.displayName,
-      fromAvatar: userProfile?.avatar,
-      createdAt: serverTimestamp(),
-    });
+
+    try {
+      const recipientPubKey = await importPublicKey(activeChat.publicKey);
+      const encrypted = await encryptMsg(recipientPubKey, text);
+      const room = roomKey(currentUser.uid, activeChat.uid);
+      await addDoc(collection(db, 'chats', room, 'messages'), {
+        encrypted,
+        from: currentUser.uid,
+        fromName: userProfile?.displayName,
+        fromAvatar: userProfile?.avatar,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      console.error('Encryption failed', e);
+    }
   };
 
   // ── Post ──────────────────────────────────────────────────────────────────
@@ -315,7 +465,7 @@ export default function CosmicApp() {
   if (appLoading)
     return (
       <div style={s.loadRoot}>
-        <style>{CSS}</style>
+        <Starfield />
         <div style={s.loadBox}>
           <div style={s.loadLogo}>🌌 COSMIC</div>
           <div style={s.loadBar}>
@@ -330,7 +480,7 @@ export default function CosmicApp() {
   if (page === 'landing')
     return (
       <div style={s.landRoot}>
-        <style>{CSS}</style>
+        <Starfield />
         <nav style={s.nav}>
           <div style={s.navLogo}>🌌 COSMIC</div>
           <div style={s.navR}>
@@ -413,8 +563,8 @@ export default function CosmicApp() {
   if (page === 'auth')
     return (
       <div style={s.authRoot}>
-        <style>{CSS}</style>
-        <div style={s.authCard}>
+        <Starfield />
+        <div style={s.authCard} className="glass">
           <div style={s.authLogo} onClick={() => setPage('landing')}>
             🌌 COSMIC
           </div>
@@ -520,14 +670,14 @@ export default function CosmicApp() {
   // ── Main App ──────────────────────────────────────────────────────────────
   return (
     <div style={s.appRoot}>
-      <style>{CSS}</style>
+      <Starfield />
 
       {sideOpen && (
         <div style={s.sideOverlay} onClick={() => setSideOpen(false)} />
       )}
 
       {/* Sidebar */}
-      <div style={{ ...s.sidebar, ...(sideOpen ? s.sidebarOpen : {}) }}>
+      <div style={{ ...s.sidebar, ...(sideOpen ? s.sidebarOpen : {}) }} className="glass">
         <div style={s.sideLogo}>🌌 COSMIC</div>
         <div style={s.sideProfile}>
           <div style={s.sideAv}>{userProfile?.avatar}</div>
@@ -593,350 +743,62 @@ export default function CosmicApp() {
 
         {/* ── FEED ── */}
         {tab === 'feed' && (
-          <div style={s.feedWrap}>
-            <div style={s.storiesRow}>
-              {storyPeople.map((u, i) => (
-                <div
-                  key={i}
-                  style={s.storyItem}
-                  onClick={() => setStoryView(u)}
-                >
-                  <div
-                    style={{
-                      ...s.storyRing,
-                      borderColor: i === 0 ? '#fff' : '#333',
-                    }}
-                  >
-                    <div style={s.storyAv}>{u?.avatar}</div>
-                  </div>
-                  <div style={s.storyLabel}>
-                    {i === 0 ? 'Your story' : u?.displayName}
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div style={s.hr} />
-
-            {showNewPost ? (
-              <div style={s.newPostBox}>
-                <div
-                  style={{
-                    display: 'flex',
-                    alignItems: 'center',
-                    gap: 10,
-                    marginBottom: 8,
-                  }}
-                >
-                  <div style={s.postAv}>{userProfile?.avatar}</div>
-                  <span style={{ color: '#888', fontSize: 13 }}>
-                    {userProfile?.displayName}
-                  </span>
-                </div>
-                <textarea
-                  style={s.newPostTA}
-                  placeholder="What's on your mind?"
-                  value={newPostText}
-                  onChange={(e) => setNewPostText(e.target.value)}
-                  rows={3}
-                  autoFocus
-                />
-                <div style={s.rowEnd}>
-                  <button
-                    style={s.cancelBtn}
-                    onClick={() => setShowNewPost(false)}
-                  >
-                    Cancel
-                  </button>
-                  <button style={s.primaryBtn} onClick={submitPost}>
-                    Post
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div
-                style={s.newPostTrigger}
-                onClick={() => setShowNewPost(true)}
-              >
-                <div style={s.postAv}>{userProfile?.avatar}</div>
-                <div style={{ flex: 1, fontSize: 14, color: '#333' }}>
-                  What's on your mind?
-                </div>
-                <span>📸</span>
-              </div>
-            )}
-
-            {posts.length === 0 ? (
-              <div style={s.emptyState}>
-                <div style={{ fontSize: 44 }}>📭</div>
-                <div style={s.emptyTitle}>No posts yet</div>
-                <div style={s.emptySub}>Be the first to post!</div>
-              </div>
-            ) : (
-              posts.map((p) => (
-                <div key={p.id} style={s.postCard}>
-                  <div style={s.postTop}>
-                    <div style={s.postAv}>{p.avatar}</div>
-                    <div>
-                      <div style={s.postName}>{p.displayName}</div>
-                      <div style={s.postTime}>
-                        {p.createdAt
-                          ?.toDate?.()
-                          ?.toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                          }) || 'just now'}
-                      </div>
-                    </div>
-                    <div style={s.postDots}>···</div>
-                  </div>
-                  <div style={s.postImg}>📸</div>
-                  <div style={s.postActions}>
-                    <button style={s.actBtn} onClick={() => toggleLike(p.id)}>
-                      {liked[p.id] ? '♥' : '♡'} {p.likes}
-                    </button>
-                    <button style={s.actBtn}>💬 {p.comments}</button>
-                    <button style={s.actBtn}>↗</button>
-                    <button style={{ ...s.actBtn, marginLeft: 'auto' }}>
-                      🔖
-                    </button>
-                  </div>
-                  <div style={s.postCaption}>
-                    <b>{p.displayName}</b> {p.caption}
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+          <Feed
+            userProfile={userProfile}
+            storyPeople={storyPeople}
+            setStoryView={setStoryView}
+            showNewPost={showNewPost}
+            setShowNewPost={setShowNewPost}
+            newPostText={newPostText}
+            setNewPostText={setNewPostText}
+            submitPost={submitPost}
+            posts={posts}
+            toggleLike={toggleLike}
+            liked={liked}
+            s={s}
+          />
         )}
 
         {/* ── CHAT ── */}
         {tab === 'chat' && (
-          <div style={s.chatLayout}>
-            <div style={s.contactPanel}>
-              <div style={s.contactHeader}>
-                <span style={s.contactTitle}>Messages</span>
-                <button
-                  style={s.addCircle}
-                  onClick={() => {
-                    setShowAdd((o) => !o);
-                    setAddErr('');
-                  }}
-                >
-                  +
-                </button>
-              </div>
-              {showAdd && (
-                <div style={s.addBox}>
-                  <input
-                    style={s.addInput}
-                    placeholder="Enter username..."
-                    value={addName}
-                    onChange={(e) => setAddName(e.target.value.toLowerCase())}
-                    onKeyDown={(e) => e.key === 'Enter' && addContact()}
-                    autoFocus
-                  />
-                  {addErr && <div style={s.addErrBox}>{addErr}</div>}
-                  <div style={s.rowEnd}>
-                    <button
-                      style={s.cancelBtn}
-                      onClick={() => {
-                        setShowAdd(false);
-                        setAddErr('');
-                        setAddName('');
-                      }}
-                    >
-                      Cancel
-                    </button>
-                    <button style={s.primaryBtn} onClick={addContact}>
-                      Add
-                    </button>
-                  </div>
-                  <div style={{ fontSize: 10, color: '#333' }}>
-                    💡 They must have a COSMIC account
-                  </div>
-                </div>
-              )}
-              {contacts.length === 0 ? (
-                <div style={s.emptyState}>
-                  <div style={{ fontSize: 28 }}>💬</div>
-                  <div style={s.emptyTitle}>No chats</div>
-                  <div style={s.emptySub}>Tap + to start one</div>
-                </div>
-              ) : (
-                contacts.map((c) => (
-                  <div
-                    key={c.uid}
-                    style={{
-                      ...s.contactItem,
-                      ...(activeChat?.uid === c.uid ? s.contactItemActive : {}),
-                    }}
-                    onClick={() => {
-                      setActiveChat(c);
-                      loadMessages(c);
-                    }}
-                  >
-                    <div style={s.contactAv}>{c.avatar}</div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={s.contactName}>{c.displayName}</div>
-                      <div style={{ fontSize: 11, color: '#444' }}>
-                        @{c.username}
-                      </div>
-                    </div>
-                    <div style={s.onlineDot} />
-                  </div>
-                ))
-              )}
-            </div>
-
-            <div style={s.chatWin}>
-              {!activeChat ? (
-                <div style={s.emptyState}>
-                  <div style={{ fontSize: 44 }}>🌌</div>
-                  <div style={s.emptyTitle}>Select a chat</div>
-                  <div style={s.emptySub}>or tap + to start one</div>
-                </div>
-              ) : (
-                <>
-                  <div style={s.chatTopBar}>
-                    <div style={s.contactAv}>{activeChat.avatar}</div>
-                    <div>
-                      <div style={s.chatTopName}>{activeChat.displayName}</div>
-                      <div style={{ fontSize: 11, color: '#444' }}>
-                        🔒 End-to-end encrypted
-                      </div>
-                    </div>
-                    <div style={s.e2eeChip}>E2EE</div>
-                  </div>
-                  <div style={s.msgArea}>
-                    {messages.length === 0 && (
-                      <div style={s.emptyState}>
-                        <div style={{ fontSize: 32 }}>🔐</div>
-                        <div style={s.emptyTitle}>Say hello!</div>
-                        <div style={s.emptySub}>Messages are encrypted E2E</div>
-                      </div>
-                    )}
-                    {messages.map((m) => {
-                      const isMe = m.from === currentUser.uid;
-                      return (
-                        <div
-                          key={m.id}
-                          style={{
-                            ...s.msgRow,
-                            justifyContent: isMe ? 'flex-end' : 'flex-start',
-                          }}
-                        >
-                          {!isMe && (
-                            <div style={s.msgAv}>{activeChat.avatar}</div>
-                          )}
-                          <div
-                            style={{
-                              ...s.bubble,
-                              ...(isMe ? s.bubbleMe : s.bubbleThem),
-                            }}
-                          >
-                            <div
-                              style={{
-                                fontSize: 14,
-                                lineHeight: 1.55,
-                                wordBreak: 'break-word',
-                              }}
-                            >
-                              {m.text}
-                            </div>
-                            <div style={s.msgMeta}>
-                              <span>
-                                {m.createdAt
-                                  ?.toDate?.()
-                                  ?.toLocaleTimeString([], {
-                                    hour: '2-digit',
-                                    minute: '2-digit',
-                                  }) || ''}
-                              </span>
-                              {isMe && <span>✓✓</span>}
-                              <span>🔒</span>
-                            </div>
-                          </div>
-                        </div>
-                      );
-                    })}
-                    <div ref={bottomRef} />
-                  </div>
-                  <div style={s.inputRow}>
-                    <input
-                      style={s.msgInput}
-                      value={msgInput}
-                      onChange={(e) => setMsgInput(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && sendMessage()}
-                      placeholder="Type a message..."
-                    />
-                    <button style={s.sendBtn} onClick={sendMessage}>
-                      Send ↑
-                    </button>
-                  </div>
-                </>
-              )}
-            </div>
-          </div>
+          <Chat
+            contacts={contacts}
+            activeChat={activeChat}
+            setActiveChat={setActiveChat}
+            loadMessages={loadMessages}
+            showAdd={showAdd}
+            setShowAdd={setShowAdd}
+            addName={addName}
+            setAddName={setAddName}
+            addErr={addErr}
+            setAddErr={setAddErr}
+            addContact={addContact}
+            messages={messages}
+            currentUser={currentUser}
+            msgInput={msgInput}
+            setMsgInput={setMsgInput}
+            sendMessage={sendMessage}
+            bottomRef={bottomRef}
+            keys={keys}
+            s={s}
+          />
         )}
 
         {/* ── PROFILE ── */}
         {tab === 'profile' && (
-          <div style={s.profileWrap}>
-            <div style={s.profileHero}>
-              <div style={s.profileBigAv}>{userProfile?.avatar}</div>
-              <div style={s.profileBigName}>{userProfile?.displayName}</div>
-              <div style={{ fontSize: 13, color: '#555' }}>
-                @{userProfile?.username}
-              </div>
-              <div style={{ fontSize: 13, color: '#888', textAlign: 'center' }}>
-                {userProfile?.bio}
-              </div>
-              <div style={s.profileStats}>
-                {[
-                  [
-                    posts.filter((p) => p.uid === currentUser?.uid).length,
-                    'Posts',
-                  ],
-                  [contacts.length, 'Contacts'],
-                ].map(([n, l]) => (
-                  <div key={l} style={s.profileStat}>
-                    <div style={s.profileStatN}>{n}</div>
-                    <div style={{ fontSize: 11, color: '#555' }}>{l}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-            <div style={s.encCard}>
-              <div style={s.encCardTitle}>🔑 Encryption Details</div>
-              {[
-                ['Algorithm', 'RSA-OAEP'],
-                ['Key Size', '2048-bit'],
-                ['Hash', 'SHA-256'],
-                ['Private Key', 'On this device only'],
-                ['Firebase', 'cosmic-b78cc'],
-                ['Status', keys ? '✓ Active' : 'Generating...'],
-              ].map(([k, v]) => (
-                <div key={k} style={s.encCardRow}>
-                  <span style={{ color: '#555' }}>{k}</span>
-                  <span style={{ color: '#fff' }}>{v}</span>
-                </div>
-              ))}
-              <div
-                style={{
-                  fontSize: 11,
-                  color: '#333',
-                  marginTop: 8,
-                  lineHeight: 1.7,
-                }}
-              >
-                Your private key is generated locally and never leaves your
-                device. Even COSMIC cannot read your messages.
-              </div>
-            </div>
-            <button style={s.logoutBtnLg} onClick={logout}>
-              Log out
-            </button>
-          </div>
+          <Profile
+            userProfile={userProfile}
+            posts={posts}
+            currentUser={currentUser}
+            contacts={contacts}
+            keys={keys}
+            theme={theme}
+            setTheme={setTheme}
+            accent={accent}
+            setAccent={setAccent}
+            logout={logout}
+            s={s}
+          />
         )}
       </div>
 
