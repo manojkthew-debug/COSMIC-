@@ -3,6 +3,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/fireba
 import Feed from './components/Feed';
 import Chat from './components/Chat';
 import Profile from './components/Profile';
+import F1Landing from './components/F1Landing';
 import {
   getAuth,
   createUserWithEmailAndPassword,
@@ -479,84 +480,12 @@ export default function CosmicApp() {
   // ── Landing ───────────────────────────────────────────────────────────────
   if (page === 'landing')
     return (
-      <div style={s.landRoot}>
-        <Starfield />
-        <nav style={s.nav}>
-          <div style={s.navLogo}>🌌 COSMIC</div>
-          <div style={s.navR}>
-            <button
-              style={s.navGhost}
-              onClick={() => {
-                setAuthTab('login');
-                setPage('auth');
-              }}
-            >
-              Log in
-            </button>
-            <button
-              style={s.navSolid}
-              onClick={() => {
-                setAuthTab('signup');
-                setPage('auth');
-              }}
-            >
-              Get started →
-            </button>
-          </div>
-        </nav>
-        <div style={s.hero}>
-          <div style={s.heroBadge}>
-            End-to-End Encrypted · RSA-2048 · Zero Backdoors
-          </div>
-          <h1 style={s.heroH1}>
-            The social app that
-            <br />
-            <span style={s.heroAccent}>actually respects you.</span>
-          </h1>
-          <p style={s.heroSub}>
-            Chat, post, and connect — encrypted end-to-end. No ads, no data
-            selling, no backdoors. Works on every device on the planet.
-          </p>
-          <div style={s.heroBtns}>
-            <button
-              style={s.heroPrimary}
-              onClick={() => {
-                setAuthTab('signup');
-                setPage('auth');
-              }}
-            >
-              Create free account
-            </button>
-            <button
-              style={s.heroSecondary}
-              onClick={() => {
-                setAuthTab('login');
-                setPage('auth');
-              }}
-            >
-              Log into existing account
-            </button>
-          </div>
-          <div style={s.heroFeatures}>
-            {[
-              ['🔐', 'RSA-2048 E2EE'],
-              ['📱', 'All devices worldwide'],
-              ['🚫', 'No ads, no tracking'],
-              ['⚡', 'Real-time chat'],
-              ['🌍', 'Works everywhere'],
-              ['🔑', 'Keys on your device'],
-            ].map(([icon, label]) => (
-              <div key={label} style={s.heroFeature}>
-                <span style={{ fontSize: 20 }}>{icon}</span>
-                <span style={{ color: '#555', fontSize: 13 }}>{label}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-        <div style={s.landFooter}>
-          © 2026 COSMIC · Private by design · Open source
-        </div>
-      </div>
+      <F1Landing
+        onGetStarted={() => {
+          setAuthTab('signup');
+          setPage('auth');
+        }}
+      />
     );
 
   // ── Auth ──────────────────────────────────────────────────────────────────
