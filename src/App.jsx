@@ -3,6 +3,7 @@ import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.12.0/fireba
 import Feed from './components/Feed';
 import Chat from './components/Chat';
 import Profile from './components/Profile';
+import GTRLanding from './components/GTRLanding';
 import {
   getAuth,
   createUserWithEmailAndPassword,
@@ -536,6 +537,12 @@ export default function CosmicApp() {
             >
               Log into existing account
             </button>
+            <button
+              style={{...s.heroSecondary, color: '#fff', borderColor: '#c1121f', background: '#c1121f'}}
+              onClick={() => setPage('gtr')}
+            >
+              Nissan GT-R Edition 🏎
+            </button>
           </div>
           <div style={s.heroFeatures}>
             {[
@@ -666,6 +673,8 @@ export default function CosmicApp() {
     );
 
   const storyPeople = [userProfile, ...contacts].filter(Boolean);
+
+  if (page === 'gtr') return <GTRLanding setPage={setPage} />;
 
   // ── Main App ──────────────────────────────────────────────────────────────
   return (
